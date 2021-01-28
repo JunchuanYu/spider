@@ -1,0 +1,91 @@
+pro GF6_dntoradiance_task, data_files=data_files,glt_file=glt_file, suffix=suffix,out_dir=out_dir
+  Compile_opt idl2
+  e=envi(/headless)
+    data_folder=envi_pickfile(/director,title='pick the input folder')
+    data_files=File_search(data_folder,'\'+'*.til',count=n_file,/test_regular)
+  suffix = 'rad'
+  print,n_file
+;  data_files='F:\GF6_WFV_E87.0_N44.7_20200808_L1A1120024238.img'
+  n_image=N_elements(data_files)
+  For i=0,n_image-1 Do Begin
+    out_dir=File_dirname(data_files[i])+path_sep()
+;    result=GF6gain(data_files[i],suffix,out_dir)
+    result=GF6dntoradiance(data_files[i],suffix,out_dir)
+    print,'processing'+string(i)+':'+data_files[i]
+  Endfor
+  if result eq 0 then message=Dialog_message('DONE!',/Information)
+End
+
+function GF6gain,input_files,suffix,out_dir
+  COMPILE_OPT IDL2
+  e=ENVI(/headless)
+  restore,'C:\Program Files\Exelis\ENVI53\extensions\ChinaSatellitesSupport\envi_china_satellites_support.sav'
+  Gains=[0.0675, 0.0552, 0.0513, 0.0314,0.0519, 0.0454, 0.0718, 0.0596]
+  Offsets=[0.0, 0.0, 0.0, 0.0,0.0, 0.0, 0.0, 0.0]
+  raster = envi_open_gf6_raster(input_files)
+
+;  raster=e.openraster(input_files)
+  split_name=STRSPLIT(File_basename(input_files),'.',/extract)
+  sf_fname=out_dir+Strjoin(split_name[0:2],'.')+'_'+suffix+'.bil'
+  IF FILE_TEST(sf_fname) then file_delete,sf_fname
+  Metadata = Raster.Metadata
+  If ~metadata.HASTAG('data gain values') Then  Metadata.AddItem,'data gain values', Gains
+  If ~metadata.HASTAG('data offset values')then  Metadata.AddItem,'data offset values', Offsets
+
+  Task = ENVITask('RadiometricCalibration')
+  Task.INPUT_RASTER = raster
+  Task.OUTPUT_DATA_TYPE = 'UInt'
+  Task.SCALE_FACTOR=10
+  Task.OUTPUT_RASTER_URI=sf_fname
+  Task.Execute
+
+end
+
+function GF6dntoradiance,input_files,suffix,out_dir
+  COMPILE_OPT IDL2
+  e=ENVI(/headless)
+  restore,'C:\Program Files\Exelis\ENVI53\extensions\ChinaSatellitesSupport\envi_china_satellites_support.sav'
+;  print,input_files
+  raster = envi_open_gf6_raster(input_files)
+  split_name=STRSPLIT(File_basename(input_files),'.',/extract)
+  sf_fname=out_dir+Strjoin(split_name[0:2],'.')+'_'+suffix+'.bil'
+  input_fid=envirastertofid(raster)
+;  Envi_open_file, input_files, r_fid=input_fid
+  Envi_file_query,input_fid,bnames=bnames,data_type=data_type,BYTE_ORDER=BYTE_ORDER,$
+    file_type=file_type,ns=ns,nb=nb,wl=wl,nl=nl,dims=dims,$
+    interleave=interleave,FWHM =FWHM,DESCRIP =descrip, data_offsets=offset,data_gains=gain
+
+  if keyword_set(gain) eq 0 then  gain=[0.675, 0.552, 0.513, 0.314,0.519, 0.454, 0.718, 0.596]
+  ;  map_info=ENVI_MAP_INFO_CREATE(/geographic,datum='WGS-84')
+  map_info=Envi_get_map_info(fid=input_fid)
+  pos=Indgen(nb)
+
+  tile_id=envi_init_tile(input_fid,pos,interleave=interleave>1, num_tiles=num_tiles, xs=dims[1], $
+    xe=dims[2], ys=dims[3], ye=dims[4])
+  split_name=STRSPLIT(File_basename(input_files),'.',/extract)
+
+  sf_fname=out_dir+Strjoin(split_name[0:2],'.')+'_'+suffix+'.bil'
+
+  Openw,lun_sf,sf_fname,/get_lun
+
+  for j=0, num_tiles-1 do begin
+    data=(envi_get_tile(tile_id, j))
+    if (interleave eq 2) then begin
+      data=transpose(data)
+    endif
+    for i=0,nb-1 do begin
+      data[*,i]=(data[*,i]*gain[i]*10)>0
+    endfor
+    Writeu, lun_sf,uint(data)
+  Endfor
+  Envi_setup_head,fname=sf_fname,ns=ns,nl=nl,nb=nb,$
+    file_type=0,data_type=12,interleave=1, data_offsets=offset,map_info=map_info, $
+    BYTE_ORDER=BYTE_ORDER,bnames=bnames, wl=wl,FWHM =FWHM,/write
+
+  close, lun_sf
+  Free_lun, lun_sf
+  fids=Envi_get_file_ids()
+  Envi_file_mng, id=fids, /remove
+
+  return,0
+end
